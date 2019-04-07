@@ -1,3 +1,73 @@
+## Project: Path Planning
+[![Udacity - Self-Driving Car NanoDegree](https://s3.amazonaws.com/udacity-sdc/github/shield-carnd.svg)](http://www.udacity.com/drive)
+
+## 1. Introduction
+The aim of this write up is to describe the process of developing a path planning system for highway driving that will complete at least one lap of the track provided. I will begin by setting the goals of the project, then I will give a walkthrough of the process and the decisions I made. I will then describe the results of the process, followed by a discussion about the limitations and possible improvements. Please note my approach is based on the solution described in the Project Q&A session as I found the lesson material for this assignment particularly difficult to follow and difficult to relate to the assignment problem.
+
+
+## 2. Goals
+The goals / steps of this project are to build a path planner that that satisfies the following requirements:
+* Complete at least one lap of the track provided.
+* Maintain a reasonable road position and distance to other vehicles.
+* Maintain a reasonable speed (close to the speed limit).
+* Avoiding excessive jerk on accelerating and turning.
+* Must not break the speed limit.
+* Must deal with traffic in a safe and effective manner.
+
+
+## 3. Walkthrough
+
+### 3.1 Move the vehicle in a straight line
+The first step is to make the vehicle move in a straight line. This is achieved by generating a vector of waypoints (in cartesian coordinates) at uniform distance intervals directly in front of the vehicle. We use the vehicles yaw value to ensure the points are generated along the vehicle's heading. The code used was provided in the 'Getting started' section of the Highway driving assignment material.
+
+### 3.2 Set the vehicles speed at close to the speed limit
+Control of the vehicles speed can now be tuned by adjusting the distance between the generated waypoints. We know the function is called every 0.02 seconds therefore if the waypoints are generated at 0.44 meter intervals the vehicle will travel at 80kph (~50mph). By adding a reference velocity parameter and using it when determing the distance between waypoints we have a more accessible method for adjusting the vehicles velocity.
+
+### 3.3 Limit jerk
+The next step is to reduce the jerk when accelerating and braking to below the threshold. We can do this by initially setting the reference velocity to 0, then every 0.02 seconds we check if the reference velocity is below the desired velocity (close to the speed limit). If the reference velocity is found to be below the desired velocity then we increment the velocity by a set amount. The adjustment can be tuned until it is close to the maximum allowable jerk without exceeding it. I set this value to 0.224 as discussed in the Project Q&A section of the assignment learning material.
+
+### 3.4 Generating the waypoints
+The most difficult part of this assignment is to get the vehicle to stay in its lane and to follow a smooth trajectory. I utilised the spline library as it does much of the tedious maths efficiently and there would be little point in reproducing it. The general approach I used is to create a spline that originates at the vehicles current location and trace the desired path to the medium distance (90 meters in 30 meter increments). Next we create a new empty path (vector) and copy the remaining waypoints in previous path to the new path. Finally we use the spline created earlier to generate new waypoints to fill out the new path to the desired number of waypoints.
+
+#### 3.4.1 Generate points
+To generate a new point in fernet coordinates we can use the vehicles current S coordinate and simply add the desired increment, add 30 if you wish the new point to be 30 meters ahead of the vehicles current position. The D coordinate can be a copy of the vehicles current D coordinate if you wish the new point to be in the same position and in the same lane as the vehicles current position. We can add or subtract to the D value to have the point to the left or right in the lane relative to the vehicles current position. The getXY method can be used to convert the fernet coordinates into cartesian coordinates.
+
+#### 3.4.2 Smooth the trajectory
+The spline object exposes a method that will return the Y coordinate of a point on the spline given its X coordinate.
+Once we have generated the medium distance spline using the last 2 waypoints in in the previous path (or the vehicles current position if no previous path exists) and 3 waypoints set at 30 meter increments as discussed above, we can obtain X & Y values for any position on that spline. Given that the spline is inherently smooth we now obtain points at intervals corresponding with the current velocity of the vehicle. This will produce a vector of waypoints tracking a smooth path at the required velocity.
+
+#### 3.4.3 Final Path
+Generation of the ultimate path that the vehicle will follow can be optimised. If parameters such as the number of point in the path and maximum velocity have been tuned adequately it is be unlikely that the vehicle will complete the entire path in a single timestep. Therefore instead of generating a full path at each timestep we can reuse any points that have not been driven from the previous path. If the number of points in the path is 50 and the vehicle progresses past 3 in a single timestep, in the next timestep we can copy the 47 unused waypoints and generate 3 new waypoints to add to the end of the path, ensuring the path remains a consistent length at each timestep but reducing the amount of processing required.
+
+### 3.5 Slow for vehicle ahead
+When the vehicle is approaching a slower vehicle ahead it must be able to adjust its speed accordingly to avoid running into the back of the other vehicle. The sensor fusion module will provide a continuously updated list of all other vehicles in range with their S&D coordinates, velocity, heading and current lane. Each timestep we loop through this list and identify all the vehicle that occupy the same lane as the ego vehicles. Next we use the S value to identify if the vehicle is ahead of the ego vehicle, if so we find the vehicles velocity and its S coordinate. Using these 2 values we can predict with reasonable accuracy where the vehicle will be in a short time period (for example 1 second). We then check if the vehicle will be less than a defined distance (30 meters) from the ego vehicle, if so we decrement the relative velocity of the ego vehicle.
+
+### 3.6 Lane change
+To generate a point in a specific lane we can set the D coordinate to the centre of the desired lane. We know that the lanes are 4 meters wide and by assigning a number to each lane (0, 1, 2) we can determine the D value (distance from the origin) of the centre of each lane with the equation: 2+(4*lane), 2 being the offset to the centre of the current lane and 4*lane being the number of full lane widths to offset from the origin.
+The distance increment between the S value of the points in the medium distance spline is an important parameter, the distance must be large enough to allow a smooth lane change to take place. If a point in the spline is in lane 1 and the next point is in lane 2, the spline must have space to track a smooth curve from lane 1 to lane 2. The next point in the spline will be an additional 30 meters ahead and should also be located in lane 2, this forces the spline to straighten its trajectory within lane 2. When we now obtain the velocity adjusted waypoints for the path vector they will trace this smooth trajectory between lane 1 and lane 2.
+
+### 3.7 When to overtake
+Overtaking presents a surprisingly complicated logical problem. The approach described in the learning material is use of a finite state machine with states including: stay in lane, follow vehicle, prepare for overtake, overtake left and overtake right, conditions determining when the system should transition between these states and cost functions governing these conditions. In a real world application this approach would be more suitable but for the this assignment I found a more simplistic approach adequate. My approach is, when the ego vehicle is following another vehicle and is travelling below the optimal velocity (close to the speed limit) I check if the adjacent lane to the left is clear (I prioritise overtaking using the left lane). If the left lane is clear, I create the medium distance spline with the 30, 60 and 90 meter points located in the desired lane thereby executing a lane change. If the left lane is not clear of other vehicles I check the lane to the right and repeat the process. This approach had a significant flaw, because if multiple vehicles were travelling at a similar velocity side by side the ego vehicle would continuously change lane back and forth. I solved this issue by only executing a lane change if the desired lane is clear beyond the current lane (33 meters vs 30 meters for the current lane), therefore the ego vehicle will only execute a lane change if there is a benefit to doing so.
+
+## 4. Results/Discussion
+Overall the implementation works quite effectively, although there is room for significant improvement. The vehicle sometimes cuts in front of other vehicles too aggressively when changing lane, code could be added to assess if a vehicle is approaching quickly from behind when changing lane. It would also be beneficial if the vehicle were to always return to the centre lane when possible as it can get boxed in when occupying an outside lane. Implementation of a finite state machine strategy would be beneficial when determining when to overtake a slower moving vehicle and to actively search for gaps in the traffic to move into.
+
+## 6.0 References:
+https://classroom.udacity.com/nanodegrees/nd013/parts/30260907-68c1-4f24-b793-89c0c2a0ad32/modules/b74b8e43-47d1-47d6-a4cf-4d64ea3e0b80/lessons/407a2efa-3383-480f-9266-5981440b09b3/concepts/3bdfeb8c-8dd6-49a7-9d08-beff6703792d
+
+
+
+
+
+
+# Original README file from this point
+
+
+
+
+
+
+
 # CarND-Path-Planning-Project
 Self-Driving Car Engineer Nanodegree Program
    
